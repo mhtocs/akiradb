@@ -18,4 +18,4 @@ search through years worth of data without blowing their budget.
 Also Elasticsearch is not really designed for type of search that is generally done on machine generated logs.
 Elasticsearch's main use case is to do full text search, whereas machine generated logs need a different kind
 of search & full text search really doesnt make any sense for it. My goal with this is to have a combination 
-of what loki does but with indexing.
+of what loki does but with columnar storage & trigram regex based search.
