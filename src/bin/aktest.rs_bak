@@ -1,0 +1,79 @@
+//! READS DONT BLOCK WRITE
+//! WRITES DONT BLOCK READ
+
+use akiradb::util::config;
+use arrow::datatypes::DataType;
+use arrow::ipc::writer::FileWriter;
+use arrow::json::ReaderBuilder;
+use bincode::serialize;
+use parquet::arrow::ArrowReader;
+use parquet::arrow::ArrowWriter;
+use parquet::basic::{Compression, Encoding};
+use parquet::file::properties::WriterProperties;
+use std::fs::File;
+use std::io::Write;
+use std::sync::Arc;
+/// JSONL -> Translog -> Columnar -> Search
+
+/// All input logs must be in form of JSONL,
+/// JSONL data is first ingested into a temporary translog
+/// directory in Row format.
+/// which is later converted into columnar format
+/// A schema is derived from logs, so it can be used during
+/// read.
+
+fn main() -> std::io::Result<()> {
+    let cfg = config::Opt::from_args();
+    cfg.files.iter().for_each(|filename| {
+        if cfg.verbose {
+            println!("parsing file {}", filename.display())
+        }
+
+        // Open the file in read-only mode (ignoring errors).
+        let builder = ReaderBuilder::new()
+            .infer_schema(Some(5))
+            .with_batch_size(2usize.pow(16));
+
+        let mut reader = builder.build(File::open(filename).unwrap()).unwrap();
+
+        let mut id = 0;
+        while let Some(batch) = reader.next().unwrap() {
+            //WRITER
+            let props = WriterProperties::builder()
+                .set_compression(Compression::SNAPPY)
+                .set_statistics_enabled(false)
+                .set_dictionary_enabled(true)
+                .build();
+
+            let f = File::create(format!(
+                "db/{}_{}.arrow",
+                filename.file_stem().unwrap().to_string_lossy(),
+                id
+            ))
+            .unwrap();
+
+            let mut writer = ArrowWriter::try_new(f, batch.schema(), Some(props)).unwrap();
+            writer.write(&batch).unwrap();
+
+            // READER
+            // let f = File::open(format!("db/{}_{}.akr", name, id)).unwrap();
+            // let mut colreader = arrow::ipc::reader::FileReader::try_new(&f).unwrap();
+            // // let mut colreader = ArrowReader::
+            // println!("NUM BATCHES FOR {} is:: {}", name, colreader.num_batches());
+            // while let Some(batch) = colreader.next() {
+            //     let batch = batch.unwrap();
+            //     let col_count = batch
+            //         .column(0)
+            //         .as_any()
+            //         .downcast_ref::<arrow::array::StringArray>()
+            //         .unwrap()
+            //         .iter();
+            //     println!("COL:::: {}, ITEM COUNT IS:: {:?}", name, col_count.len())
+            // }
+
+            id += 1;
+        }
+    });
+
+    Ok(())
+}

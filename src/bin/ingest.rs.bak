@@ -1,0 +1,17 @@
+use std::convert::TryInto;
+use wal::{FSBlobStore, Wal, WriteRecord};
+
+fn main() {
+    println!("main started");
+    let mut wal = Wal::new(FSBlobStore {
+        root: Some("db".into()),
+        blobs: vec![],
+    });
+
+    let v = vec![1u8; (2u32.pow(30)).try_into().unwrap()];
+    let record = WriteRecord::new(v).unwrap();
+    for _ in 0..500 {
+        wal.append(&record).unwrap();
+    }
+    wal.fsync().unwrap();
+}

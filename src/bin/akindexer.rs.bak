@@ -1,0 +1,233 @@
+//! READS DONT BLOCK WRITE
+//! WRITES DONT BLOCK READ
+
+use akiradb::ingest::tokenizer;
+use akiradb::util::config;
+use akiradb::util::file;
+use rayon::prelude::*;
+use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
+
+fn get_type<T>(_: &T) -> &str {
+    return std::any::type_name::<T>();
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+enum ColumnType {
+    Int,
+    Str,
+    Unk,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+enum N {
+    PosInt(u64),
+    NegInt(i64),
+    Float(f64),
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct Column {
+    name: usize,
+    value: Value,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct ColumnInfo {
+    _type: ColumnType,
+    _id: usize,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct Schema {
+    columns: HashMap<String, ColumnInfo>,
+}
+
+impl Schema {
+    fn get_or_insert(&mut self, col_name: String, _type: ColumnType) -> &ColumnInfo {
+        let _id = self.columns.keys().len(); //use current size of map as id
+        let column_info = self
+            .columns
+            .entry(col_name.clone())
+            .or_insert(ColumnInfo { _type, _id });
+        column_info
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct Table<'a> {
+    name: &'a str,
+    schema: Schema, //map of key v id
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct Row {
+    epoch: u64,
+    strs: Vec<Column>,
+    ints: Vec<Column>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct RowBlock {
+    vec: Vec<Row>,
+    name: String,
+}
+
+impl RowBlock {
+    fn insert_row(&mut self, log: Row) {
+        self.vec.push(log)
+    }
+}
+
+impl Row {
+    fn insert_str_column(&mut self, field: Column) {
+        self.strs.push(field)
+    }
+
+    fn insert_int_column(&mut self, field: Column) {
+        self.ints.push(field)
+    }
+
+    fn new() -> Self {
+        Self {
+            epoch: 0u64,
+            ints: vec![],
+            strs: vec![],
+        }
+    }
+}
+
+/// JSONL -> Translog -> Columnar -> Search
+
+/// All input logs must be in form of JSONL,
+/// JSONL data is first ingested into a temporary translog
+/// directory in Row format.
+/// which is later converted into columnar format
+/// A schema is derived from logs, so it can be used during
+/// read.
+
+fn main() -> std::io::Result<()> {
+    let cfg = config::Opt::from_args();
+    cfg.files.iter().for_each(|filename| {
+        if cfg.verbose {
+            println!("parsing file {}", filename.display())
+        }
+
+        // Open the file in read-only mode (ignoring errors).
+        let mut reader = file::reader(&filename, &cfg);
+        let mut table = Table {
+            name: "tmp_table",
+            schema: Schema {
+                columns: HashMap::new(),
+            },
+        };
+
+        let mut block = RowBlock {
+            vec: vec![],
+            name: format!("{}", filename.file_stem().unwrap().to_str().unwrap()),
+        };
+        let block_size = 2usize.pow(16);
+        println!("Block size is :: {}", block_size);
+        let mut buf = String::with_capacity(8 * 1024);
+        let mut i = 0;
+        while reader.read_line(&mut buf).unwrap_or(0) > 0 {
+            let json: serde_json::Result<Value> = serde_json::from_str(&buf);
+            match json {
+                Ok(json) => {
+                    serde_json::to_vec(&json);
+                    let mut row = Row::new();
+                    for (k, v) in json.as_object().unwrap().iter() {
+                        if v.is_string() {
+                            let field = table.schema.get_or_insert(k.to_owned(), ColumnType::Str);
+                            row.insert_str_column(Column {
+                                name: field._id.to_owned(),
+                                value: v.to_owned(),
+                            });
+                        } else if v.is_number() {
+                            let field = table.schema.get_or_insert(k.to_owned(), ColumnType::Int);
+                            row.insert_int_column(Column {
+                                name: field._id.to_owned(),
+                                value: v.to_owned(),
+                            })
+                        } else {
+                            unreachable!("shouldn't reach!");
+                        }
+                    }
+                    block.insert_row(row);
+                    if block.vec.len() > block_size {
+                        println!("adding to file: {}", block.name);
+                        //                       block.vec.sort_by_key(|s| s.epoch);
+                        let payload = bincode::serialize(&block).unwrap();
+                        //let payload = frame_press(&payload);
+                        //                     compress_and_flush(&format!("{}_{}.bin", block.name, i), &payload[..])
+                        //                       .unwrap();
+                        block.vec.clear(); //trunc it
+                    }
+                }
+                Err(err) => println!("PARSING ERROR:: {}", err),
+            }
+            i = i + 1;
+            buf.clear();
+        }
+
+        if !block.vec.is_empty() {
+            let payload = bincode::serialize(&block).unwrap();
+            //let payload = frame_press(&payload);
+            //     compress_and_flush(&format!("{}_final.bin", block.name), &payload[..]).unwrap();
+        }
+        // println!("LIST:: {:#?}", rowvec);
+        println!("DONE");
+        print!("SCHEMA:: {:#?}", table.schema.columns);
+        // let encoded = bincode::serialize(&rowvec).unwrap();
+        // let compressed = frame_press(&encoded);
+
+        // let decomp = frame_depress(&compressed);
+        // let decoded: RowBlock = bincode::deserialize(&decomp[..]).unwrap();
+        // assert_eq!(decoded, rowvec);
+        // println!(
+        //     "ENCODED_SIZE:: {:?} bytes",
+        //     std::mem::size_of_val(&*encoded)
+        // );
+        // println!(
+        //     "COMPRESSED_SIZE:: {:?} bytes",
+        //     std::mem::size_of_val(&*compressed)
+        // );
+        //println!("NAME_V_ID:: {:#?}", name_id_map);
+    });
+
+    Ok(())
+}
+
+fn frame_press(bytes: &[u8]) -> Vec<u8> {
+    use snap::write;
+
+    let mut wtr = write::FrameEncoder::new(vec![]);
+    wtr.write_all(bytes).unwrap();
+    wtr.into_inner().unwrap()
+}
+
+fn frame_depress(bytes: &[u8]) -> Vec<u8> {
+    use snap::read;
+    use std::io::Read;
+
+    let mut buf = vec![];
+    read::FrameDecoder::new(bytes)
+        .read_to_end(&mut buf)
+        .unwrap();
+    buf
+}
+
+fn compress_and_flush(filename: &String, payload: &[u8]) -> std::io::Result<()> {
+    let mut f = File::create(format!("db/{}", filename))?;
+    f.write_all(payload).unwrap(); //.and_then(|_| f.sync_all())?;
+    Ok(())
+}
+
+fn test() {
+    println!("Hello!");
+}
