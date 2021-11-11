@@ -1,7 +1,8 @@
 # AkiraDB
 
-Search is overated
+> Search is overated
 
+why this? : [see this](https://blog.sinkingpoint.com/posts/elasticsearch-logging/) to understand why
 
 AkiraDB is a tiny search engine, a sort of alternative to elasticsearch.
 
