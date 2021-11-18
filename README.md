@@ -4,7 +4,7 @@
 
 why this? : [see this](https://blog.sinkingpoint.com/posts/elasticsearch-logging/) to understand why
 
-AkiraDB is a tiny search engine, a sort of alternative to elasticsearch.
+AkiraDB is a tiny search engine that i am working on, a sort of alternative to elasticsearch.
 
 The main goal of this project is to be able to store & search machine generated logs 
 type data. 
