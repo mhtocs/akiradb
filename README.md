@@ -1,5 +1,7 @@
 # AkiraDB
 
+🚧 WIP
+
 > Search is overated
 
 why this? : [see this](https://blog.sinkingpoint.com/posts/elasticsearch-logging/) to understand why
